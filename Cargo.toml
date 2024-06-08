@@ -1,0 +1,9 @@
+[package]
+name = "calendarrelay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.6", features = ["derive"] }
+tokio = { version = "1.38.0", features = ["rt", "rt-multi-thread", "macros"] }
+thiserror = "1.0.61"
