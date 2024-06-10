@@ -26,8 +26,6 @@ struct Config {
     push_authorization: String
 }
 
-
-
 #[tokio::main]
 async fn main()  -> Result<(),AppError>{
     let shared_config = Arc::new(Config::parse());
@@ -37,7 +35,6 @@ async fn main()  -> Result<(),AppError>{
 
     println!("server is waiting for incoming connections on {}", addr);
     let listener = TcpListener::bind(addr).await?;
-
 
     loop {
         tokio::select! {

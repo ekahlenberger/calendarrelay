@@ -5,4 +5,6 @@ use thiserror::Error;
 pub enum AppError {
     #[error("IO error: {0}")]
     IO(#[from] io::Error),
+    #[error("Decrypt error: {0}")]
+    Aes(aes_gcm::Error),
 }
