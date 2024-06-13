@@ -10,32 +10,32 @@ use hyper::body::{Bytes, Incoming};
 use hyper::{header, HeaderMap, Method, Request, Response, StatusCode};
 use pbkdf2::pbkdf2_hmac;
 use sha256::digest;
-use tokio::fs::File;
+use tokio::fs::{File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::Config;
 use crate::error::AppError;
 
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
-const PBKDF2_ITERATIONS: u32 = 1_000_000;
+const PBKDF2_ITERATIONS: u32 = 1;
 const AES_KEY_SIZE: usize = 32; // 256 bits
+const URL_ID_SIZE: usize = 32;
 
 pub async fn handle_req(req: Request<Incoming>, config: Arc<Config>) -> Result<Response<Full<Bytes>>, Infallible> {
 
     let path = req.uri().path().trim_matches('/');
-    if path.len() < 64 {
+    if path.len() < URL_ID_SIZE {
         return response_with_status(StatusCode::BAD_REQUEST, "invalid id");
     }
 
-    let id = &path[..64];
+    let id = &path[..URL_ID_SIZE];
     let hashed = digest(id);
     let method = req.method();
-
-    println!("handling request for {}", path);
 
     return match *method {
         Method::POST => handle_post(req, &config, &hashed).await,
         Method::GET => handle_get(req, &config, &hashed).await,
+        Method::DELETE => handle_delete(req, &config, &hashed).await,
         _ => response_with_status(StatusCode::BAD_REQUEST, "Failed to decode Base64 path")
     }
 }
@@ -66,9 +66,9 @@ async fn handle_post(req: Request<Incoming>, config: &Arc<Config>, hashed_id: &s
         Err(_) => response_with_status(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write data to file")
     }
 }
-async fn handle_get(req: Request<Incoming>, config: &Arc<Config>, hashed_id: &str) -> Result<Response<Full<Bytes>>, Infallible>{
+async fn handle_get(req: Request<Incoming>, config: &Arc<Config>, hashed_id: &str) -> Result<Response<Full<Bytes>>, Infallible> {
     let path = req.uri().path().trim_matches('/');
-    let coded_key = &path[64..];
+    let coded_key = &path[URL_ID_SIZE..];
 
     let key = match general_purpose::STANDARD.decode(coded_key) {
         Ok(decoded_bytes) => decoded_bytes,
@@ -77,7 +77,7 @@ async fn handle_get(req: Request<Incoming>, config: &Arc<Config>, hashed_id: &st
 
     let file_path = config.data_dir.join(hashed_id);
     if !Path::new(&file_path).exists(){
-        return response_with_status(StatusCode::INTERNAL_SERVER_ERROR, "The calendar does not exist")
+        return response_with_status(StatusCode::NOT_FOUND, "Calendar does not exist")
     }
     let data = match read_from_file(file_path).await{
         Ok(data) =>
@@ -96,6 +96,25 @@ async fn handle_get(req: Request<Incoming>, config: &Arc<Config>, hashed_id: &st
     };
 
     response_with_ok(Bytes::from(data), "text/calendar")
+}
+async fn handle_delete(req: Request<Incoming>, config: &Arc<Config>, hashed_id: &String) -> Result<Response<Full<Bytes>>, Infallible> {
+    let headers = req.headers();
+
+    // Check Authorization header
+    if !authorize(headers, &config.push_authorization) {
+        return response_with_status(StatusCode::UNAUTHORIZED, "Unauthorized");
+    }
+
+    let file_path = config.data_dir.join(hashed_id);
+    if !Path::new(&file_path).exists() {
+        return response_with_status(StatusCode::NOT_FOUND, "Calendar does not exist");
+    }
+    if let Err(_) = tokio::fs::remove_file(file_path).await {
+        return response_with_status(StatusCode::INTERNAL_SERVER_ERROR, "Calendar delete failed");
+    }
+    else {
+        response_with_ok(Bytes::from("Calendar deleted"), "text/plain")
+    }
 }
 async fn write_to_file<P: AsRef<Path>>(path: P, data: Bytes) -> Result<(), AppError> {
     let mut file = File::create(path).await?;
@@ -121,7 +140,7 @@ fn authorize(headers: &HeaderMap, expected_authorization_value: &str) -> bool {
 
 fn decrypt(encrypted_data: &[u8], pass: &Vec<u8>) -> Result<Vec<u8>, AppError> {
 
-    let salt = b""; // Ideally, use a unique salt for each user/data
+    let salt = b"some salt"; // Ideally, use a unique salt for each user/data
     let mut key = [0u8; AES_KEY_SIZE];
     pbkdf2_hmac::<sha2::Sha256>(pass, salt, PBKDF2_ITERATIONS, &mut key);
 
@@ -161,6 +180,14 @@ fn response_with_status(status: StatusCode, message: &str) -> Result<Response<Fu
 }
 
 fn response_with_ok(content: Bytes, content_type: &str) -> Result<Response<Full<Bytes>>,Infallible> {
+    if content_type.contains("calendar"){
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", content_type)
+            .header(header::CONTENT_DISPOSITION, "attachment; filename=\"calendar.ics\"")
+            .body(Full::new(content))
+            .unwrap());
+    }
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", content_type)
